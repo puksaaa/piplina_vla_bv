@@ -1,0 +1,8 @@
+fastapi==0.116.1
+uvicorn[standard]==0.35.0
+httpx==0.28.1
+opencv-python-headless==4.10.0.84
+pyzmq==26.2.0
+numpy==2.4.6
+openai==1.99.9
+python-dotenv==1.1.1

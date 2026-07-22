@@ -1,0 +1,17 @@
+[Unit]
+Description=Camera splitter for VLM snapshots and LeRobot ZMQCamera
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/robot-camera-splitter
+ExecStart=/opt/robot-camera-splitter/scripts/start_camera_splitter.sh
+Restart=always
+RestartSec=2
+User=%i
+Group=%i
+SupplementaryGroups=video
+
+[Install]
+WantedBy=multi-user.target

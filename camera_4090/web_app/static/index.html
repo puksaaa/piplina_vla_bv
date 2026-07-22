@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Baby Blue LLM Chat</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <div class="ambient ambient-one"></div>
+    <div class="ambient ambient-two"></div>
+    <div class="ambient ambient-three"></div>
+
+    <main class="chat-shell">
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-mark">Q</span>
+        </div>
+
+        <div class="top-actions">
+          <div class="status-pill">
+            <span id="statusDot" class="status-dot offline"></span>
+            <span id="statusText">offline</span>
+          </div>
+          <button id="checkButton" type="button">Проверить</button>
+          <button id="cameraButton" type="button">Камеры</button>
+          <button id="clearButton" type="button" class="secondary">Очистить</button>
+        </div>
+      </header>
+
+      <section id="imageTray" class="image-tray hidden" aria-label="Прикреплённые изображения">
+        <div id="imagePreviewList" class="image-preview-list"></div>
+        <button id="clearImagesButton" type="button" class="ghost-button">Убрать</button>
+      </section>
+
+      <section id="messages" class="messages" aria-live="polite"></section>
+
+      <form id="chatForm" class="composer">
+        <input id="imageInput" type="file" accept="image/*" multiple hidden />
+        <button id="imageButton" type="button" class="image-button" aria-label="Прикрепить изображение">◎</button>
+        <textarea
+          id="messageInput"
+          rows="1"
+          placeholder="Напишите сообщение..."
+          autocomplete="off"
+        ></textarea>
+        <button id="sendButton" type="submit" aria-label="Отправить">➜</button>
+      </form>
+    </main>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>

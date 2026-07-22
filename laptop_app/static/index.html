@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#ffffff" />
+    <title>Physical AI — VLA-агент для SO-101</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <main class="experience" aria-live="polite">
+      <section class="intro screen active" aria-label="Заставка. Нажмите, чтобы продолжить" role="button" tabindex="0">
+        <div class="intro-copy">
+          <p class="kicker">Яндекс Роботикс</p>
+          <h1>Physical AI</h1>
+          <p class="subtitle">VLA-агент для SO-101</p>
+        </div>
+        <img class="robot intro-robot" src="robot-hand.png" alt="Роботизированная рука" />
+      </section>
+
+      <section class="task screen" aria-label="Управление роботом">
+        <div class="task-copy">
+          <p class="kicker">Physical AI</p>
+          <h2>Скажи,<br />что сделать</h2>
+          <p class="task-hint">Роборука поймёт обычную команду</p>
+        </div>
+        <div class="stage" aria-hidden="true">
+          <span class="orbit orbit-one"></span><span class="orbit orbit-two"></span>
+          <img class="robot task-robot" src="robot-hand.png" alt="" />
+        </div>
+        <form class="command-card" id="commandForm">
+          <label class="sr-only" for="command">Команда для робота</label>
+          <textarea id="command" rows="1" placeholder="Например: положи предмет в коробку"></textarea>
+          <button class="send" type="submit" aria-label="Запустить задачу"><span>↗</span></button>
+        </form>
+        <p class="caption">Можно написать или сказать</p>
+      </section>
+
+      <section class="working screen" aria-label="Робот выполняет задачу">
+        <p class="kicker">Physical AI</p>
+        <div class="working-copy">
+          <p class="status-line"><span class="pulse"></span>выполняю</p>
+          <h2 id="taskText">Выполняю команду</h2>
+        </div>
+        <div class="working-stage">
+          <div class="path path-back"></div><div class="path path-front"></div>
+          <img class="robot action-robot" src="robot-hand.png" alt="Роборука выполняет задачу" />
+        </div>
+        <p class="execution-note" id="executionNote">Ожидаю завершения робота</p>
+        <div class="operator-controls">
+          <button class="approve-run" type="button" id="approveRun" disabled>Подтвердить</button>
+          <button class="stop-run" type="button" id="stopRun" aria-label="Остановить текущую задачу">
+            <span aria-hidden="true">■</span> Стоп
+          </button>
+        </div>
+      </section>
+
+      <section class="done screen" aria-label="Задача выполнена">
+        <p class="kicker">Physical AI</p>
+        <img class="robot done-robot" src="robot-hand.png" alt="Роборука завершила задачу" />
+        <div class="done-copy"><span class="check">✓</span><h2>Готово!</h2><p>Задача выполнена</p></div>
+        <button class="again" type="button" id="again">Новая задача</button>
+      </section>
+    </main>
+    <script src="app.js"></script>
+  </body>
+</html>
