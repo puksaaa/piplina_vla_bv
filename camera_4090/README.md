@@ -1,5 +1,59 @@
 # Robot Camera Splitter для 4090
 
+## Быстрый запуск: 4090 + SO-101
+
+Все команды этого раздела выполняются **на компьютере с RTX 4090**, к которому
+подключены камеры и рука SO-101. На ноутбуке запускается только веб-интерфейс.
+
+```bash
+git clone https://github.com/puksaaa/piplina_vla_bv.git
+cd piplina_vla_bv/camera_4090
+chmod +x scripts/*.sh
+./scripts/install_camera_splitter.sh
+
+cp .env.vlm.example .env.vlm
+cp .env.smolvla.example .env.smolvla
+cp .env.orchestrator.example .env.orchestrator
+cp web_app/.env.example web_app/.env
+```
+
+В `.env.smolvla` укажи настоящий checkpoint SmolVLA, Python-окружение с LeRobot и
+serial-порт руки. Узнать порт можно командой `ls /dev/ttyACM*`.
+
+```env
+SMOLVLA_POLICY_PATH=/absolute/path/to/checkpoint/pretrained_model
+SMOLVLA_PYTHON=/absolute/path/to/lerobot/bin/python
+SMOLVLA_ROBOT_TYPE=so101_follower
+SMOLVLA_ROBOT_PORT=/dev/ttyACM0
+SMOLVLA_ROBOT_ID=robot_arm
+```
+
+Перед первым физическим запуском обязательно проверь связь и порядок суставов.
+Эти команды выполняются рядом с рукой и требуют визуального контроля:
+
+```bash
+set -a && source .env.smolvla && set +a
+"$SMOLVLA_PYTHON" verify_actuation.py --port /dev/ttyACM0
+"$SMOLVLA_PYTHON" verify_actuation.py --port /dev/ttyACM0 --send-hold
+"$SMOLVLA_PYTHON" verify_actuation.py --port /dev/ttyACM0 --nudge 3 --max-relative-target 5
+```
+
+Только после успешных проверок включи физическое движение в `.env.smolvla`:
+
+```env
+SMOLVLA_ACTUATION_ENABLED=1
+SMOLVLA_MAX_RELATIVE_TARGET=5
+SMOLVLA_ROBOT_USE_DEGREES=1
+```
+
+Запуск полного стека — splitter камер, SmolVLA runner, orchestrator и веб-интерфейс:
+
+```bash
+WEB_APP_DIR=web_app ./scripts/start_orchestrated_web.sh
+```
+
+После запуска открой `http://100.64.0.1:8000`.
+
 Этот архив нужен для компьютера с 4090. Он поднимает разветвитель USB-камер и веб-страницу, где можно написать задачу роботу. VLM получает свежий кадр со сцены или загруженную картинку и возвращает короткий контракт:
 
 - `plan[].action`: простые команды для VLA, например `move red cube to white plate`;
