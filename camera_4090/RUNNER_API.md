@@ -4,15 +4,23 @@
 once, keeps it in CUDA memory, reads ZMQ camera frames, and changes the current
 short language task without restarting the process.
 
-It is inference-only: it never opens a serial port or transmits motor commands.
+Actuation is opt-in via `SMOLVLA_ACTUATION_ENABLED`. When off (default) the
+runner is inference-only: it never opens a serial port and expects robot state at
+`POST /v1/state`. When on, the runner owns the SO-101 serial port through
+`robot_actuator.RobotActuator`, reads joint state itself, and sends each policy
+action to the motors. `GET /health` reports the active `execution_mode`
+(`inference_only`, `robot_state_readonly`, or `actuation`).
 
 ## Lifecycle
 
 1. Start the camera splitter.
 2. Start `./scripts/start_smolvla_runner.sh`.
-3. A protected robot-side reader supplies the current state vector to
-   `POST /v1/state` at the control rate. The vector length must equal
-   `policy_state_dimension` in `GET /health`.
+3. State source depends on the mode:
+   - inference-only: a protected robot-side reader supplies the current state
+     vector to `POST /v1/state` at the control rate. The vector length must equal
+     `policy_state_dimension` in `GET /health`.
+   - actuation / robot_state_readonly: the runner reads joint state from the arm
+     itself each control tick, so no external state pusher is required.
 4. The supervisor starts exactly one short action with `POST /v1/actions/start`.
 5. The runner resets its old SmolVLA action cache and begins inference using the
    new action and fresh ZMQ frames.

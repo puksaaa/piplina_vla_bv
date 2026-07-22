@@ -26,7 +26,7 @@ stop
 
 Forbidden: left, right, up, down, front, behind, coordinates, pixels, angles.
 
-SmolVLA is a local LeRobot model, not an HTTP robot-hand endpoint. It runs on the 4090 and receives frames through `ZMQCamera`. Leave `VLA_ENABLED=0` in `laptop_app/.env` until a separate SmolVLA command-queue runner exists.
+SmolVLA is a local LeRobot model, not an HTTP robot-hand endpoint. It runs on the 4090 and receives frames through `ZMQCamera`. The resident runner (`camera_4090/smolvla_runner.py`) now closes the loop: with `SMOLVLA_ACTUATION_ENABLED=1` it opens the SO-101 serial port, reads joint state, and sends policy actions to the motors. See `camera_4090/README.md` section 10 for the opt-in flags and the safe first-run procedure on hardware.
 
 Проект разделён по машинам:
 
@@ -36,7 +36,9 @@ camera_4090/  - camera splitter для Linux ПК с 4090 и двумя USB-ка
 DGX/ручка     - файлов не нужно, используется только OpenAI-compatible endpoint
 ```
 
-Сейчас система строит только план. VLA/SmolVLA не вызывается.
+Режимы: базовый режим ноутбука строит только план (`vla_called: false`).
+Оркестрированный режим на 4090 реально вызывает SmolVLA (инференс), а при
+`SMOLVLA_ACTUATION_ENABLED=1` ещё и физически двигает руку через resident runner.
 
 ## Схема
 

@@ -2,7 +2,8 @@
 
 This service owns one run at a time. It asks the VLM for a contract, submits a
 single step to the resident runner, waits for visual verification, and only
-then advances or replans. It never opens a robot port or emits motor commands.
+then advances or replans. It never touches the serial port itself; actuation,
+when enabled, happens inside the resident runner it delegates to.
 """
 
 from __future__ import annotations
@@ -97,7 +98,8 @@ class OrchestratorService:
             "active_run_id": active,
             "vlm_keepalive": dict(self.vlm.status),
             "runner": runner,
-            "execution_mode": "inference_only",
+            # Actuation lives in the runner; surface whatever mode it reports.
+            "execution_mode": runner.get("execution_mode") if isinstance(runner, dict) else None,
         }
 
     def create_run(self, task: str) -> RunRecord:

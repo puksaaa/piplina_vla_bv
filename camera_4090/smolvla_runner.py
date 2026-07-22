@@ -1,9 +1,18 @@
 """Persistent inference service for a fine-tuned SmolVLA.
 
 The process loads a policy into CUDA once, reads ZMQ camera frames, and swaps
-the language task without reloading the model. It deliberately never opens a
-robot serial port or sends motor commands: action chunks are emitted as events
-for an existing protected actuator boundary to consume.
+the language task without reloading the model.
+
+Actuation is opt-in. With ``SMOLVLA_ACTUATION_ENABLED=0`` (default) the runner
+behaves as a pure inference service: it emits action-chunk events and expects an
+external reader to push robot state via ``POST /v1/state``. With
+``SMOLVLA_ACTUATION_ENABLED=1`` the runner owns the SO-101 serial port through
+``robot_actuator.RobotActuator``: it reads the real joint state itself each
+control tick and sends every policy action to the motors, closing the physical
+loop. ``SMOLVLA_ROBOT_CONNECT=1`` with actuation disabled connects to the arm
+and reads state for a dry run without ever commanding motion.
+
+The single ``inference_loop`` thread is the only owner of the serial bus.
 """
 
 from __future__ import annotations
@@ -22,6 +31,8 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from robot_actuator import RobotActuator
+
 
 BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env.smolvla")
@@ -32,6 +43,13 @@ USE_TORCH_COMPILE = os.getenv("SMOLVLA_USE_TORCH_COMPILE", "0") == "1"
 ROBOT_TYPE = os.getenv("SMOLVLA_ROBOT_TYPE", "").strip()
 ROBOT_PORT = os.getenv("SMOLVLA_ROBOT_PORT", "").strip()
 ROBOT_ID = os.getenv("SMOLVLA_ROBOT_ID", "").strip()
+# Actuation is opt-in. Enabling it makes the runner open the serial port and
+# command the motors; ROBOT_CONNECT alone connects and reads state without motion.
+ACTUATION_ENABLED = os.getenv("SMOLVLA_ACTUATION_ENABLED", "0") == "1"
+ROBOT_CONNECT = os.getenv("SMOLVLA_ROBOT_CONNECT", "1" if ACTUATION_ENABLED else "0") == "1"
+ROBOT_USE_DEGREES = os.getenv("SMOLVLA_ROBOT_USE_DEGREES", "1") == "1"
+_max_relative_target = os.getenv("SMOLVLA_MAX_RELATIVE_TARGET", "").strip()
+MAX_RELATIVE_TARGET = float(_max_relative_target) if _max_relative_target else None
 RUNNER_FPS = int(os.getenv("SMOLVLA_RUNNER_FPS", "15"))
 ACTION_CHUNK_SIZE = int(os.getenv("SMOLVLA_ACTION_CHUNK_SIZE", "0"))
 ACTION_QUEUE_SIZE = int(os.getenv("SMOLVLA_ACTION_QUEUE_SIZE", "1"))
@@ -212,6 +230,7 @@ class RunnerState:
         self.policy_expectations: list[CameraExpectation] = []
         self.state_expectation = StateExpectation(None)
         self.cameras: dict[str, Any] = {}
+        self.actuator: RobotActuator | None = None
         self.active: dict[str, Any] | None = None
         self.task_generation = 0
         self.latest_state: list[float] | None = None
@@ -221,6 +240,9 @@ class RunnerState:
         self.last_inference_error: str | None = None
         self.last_action_dimension: int | None = None
         self.last_action_at: float | None = None
+        self.actuation_count = 0
+        self.last_sent_action: dict[str, float] | None = None
+        self.last_sent_action_at: float | None = None
         self.waiting_for_state_generation: int | None = None
         self.events: deque[dict[str, Any]] = deque(maxlen=EVENT_LIMIT)
         self.event_id = 0
@@ -241,7 +263,13 @@ class RunnerState:
                 "policy_loaded": self.policy is not None,
                 "policy_path": POLICY_PATH,
                 "device": DEVICE,
-                "execution_mode": "inference_only",
+                "execution_mode": (
+                    "actuation"
+                    if self.actuator is not None and self.actuator.actuation_enabled
+                    else "robot_state_readonly"
+                    if self.actuator is not None
+                    else "inference_only"
+                ),
                 "runner_fps": RUNNER_FPS,
                 "inference_enabled": INFERENCE_ENABLED,
                 "inference_fps": INFERENCE_FPS,
@@ -249,10 +277,13 @@ class RunnerState:
                 "action_queue_size": ACTION_QUEUE_SIZE,
                 "action_timeout_seconds": ACTION_TIMEOUT_SECONDS,
                 "state_timeout_ms": STATE_TIMEOUT_MS,
-                "robot_boundary": {
+                "robot_boundary": self.actuator.snapshot()
+                if self.actuator is not None
+                else {
                     "type": ROBOT_TYPE or None,
                     "port_configured": bool(ROBOT_PORT),
                     "id": ROBOT_ID or None,
+                    "actuation_enabled": False,
                     "actuator_connected": False,
                 },
                 "loaded_at": self.loaded_at,
@@ -270,6 +301,9 @@ class RunnerState:
                 "last_inference_error": self.last_inference_error,
                 "last_action_dimension": self.last_action_dimension,
                 "last_action_at": self.last_action_at,
+                "actuation_count": self.actuation_count,
+                "last_sent_action": self.last_sent_action,
+                "last_sent_action_at": self.last_sent_action_at,
                 "event_id": self.event_id,
             }
 
@@ -356,6 +390,44 @@ def load_policy_and_cameras() -> None:
                 pass
         raise
 
+    actuator: RobotActuator | None = None
+    if ROBOT_CONNECT:
+        actuator = RobotActuator(
+            robot_type=ROBOT_TYPE,
+            port=ROBOT_PORT,
+            robot_id=ROBOT_ID,
+            max_relative_target=MAX_RELATIVE_TARGET,
+            use_degrees=ROBOT_USE_DEGREES,
+            actuation_enabled=ACTUATION_ENABLED,
+        )
+        try:
+            boundary = actuator.connect()
+        except Exception:
+            for camera in cameras.values():
+                try:
+                    camera.disconnect()
+                except Exception:
+                    pass
+            raise
+        # Print the resolved motor order loudly: it MUST match the training order.
+        print(json.dumps({"event": "robot_actuator_connected", **boundary}), flush=True)
+        if (
+            state_expectation.dimension is not None
+            and len(actuator.motor_pos_names) != state_expectation.dimension
+        ):
+            print(
+                json.dumps(
+                    {
+                        "event": "robot_state_dimension_warning",
+                        "robot_motor_count": len(actuator.motor_pos_names),
+                        "policy_state_dimension": state_expectation.dimension,
+                        "detail": "Robot joint count differs from policy observation.state; "
+                        "validate the state/action mapping on hardware before enabling motion.",
+                    }
+                ),
+                flush=True,
+            )
+
     with runner.lock:
         runner.policy = policy
         runner.preprocess = preprocess
@@ -364,12 +436,26 @@ def load_policy_and_cameras() -> None:
         runner.policy_expectations = expectations
         runner.state_expectation = state_expectation
         runner.cameras = cameras
+        runner.actuator = actuator
         runner.loaded_at = time.time()
         runner.state = "ready"
         runner.error = None
     # A connected socket without a frame is not a usable camera. Probe now so
     # startup fails before Gemma can create an executable-looking contract.
     frame_shapes = verify_latest_camera_frames()
+    # When the runner owns the arm it supplies its own state; prime it once so
+    # the first action's freshness gate passes without an external pusher.
+    if actuator is not None:
+        try:
+            initial_state = actuator.read_state()
+        except Exception as exc:
+            runner.emit("robot_state_read_failed", error=str(exc))
+        else:
+            now = time.time()
+            with runner.lock:
+                runner.latest_state = initial_state
+                runner.latest_state_at = now
+                runner.waiting_for_state_generation = None
     health = runner.snapshot()
     runner.emit("runner_ready", health=health, frame_shapes=frame_shapes)
     print(json.dumps({"event": "smolvla_runner_ready", "health": health, "frame_shapes": frame_shapes}), flush=True)
@@ -458,6 +544,22 @@ def build_policy_input(frames: dict[str, Any], task: str, state: list[float]) ->
     )
 
 
+def to_action_list(value: Any) -> list[float]:
+    """Flatten a policy action tensor to plain floats for the actuator."""
+
+    if hasattr(value, "detach"):
+        value = value.detach()
+    if hasattr(value, "cpu"):
+        value = value.cpu()
+    if hasattr(value, "flatten"):
+        value = value.flatten()
+    if hasattr(value, "tolist"):
+        value = value.tolist()
+    if not isinstance(value, (list, tuple)):
+        value = [value]
+    return [float(item) for item in value]
+
+
 def action_dimension(value: Any) -> int | None:
     shape = getattr(value, "shape", None)
     if shape is not None:
@@ -474,16 +576,47 @@ def action_dimension(value: Any) -> int | None:
         return None
 
 
-def inference_loop() -> None:
-    """Continuously infer only while a supervisor-owned action is active.
+def refresh_robot_state(actuator: RobotActuator) -> bool:
+    """Read joint state from the arm and publish it as the current policy state.
 
-    The loop intentionally stops before any actuator call. Its role is to prove
-    that task replacement, state injection, image preprocessing, and policy
-    inference all work without reloading the CUDA-resident model.
+    Runs every tick when the runner owns the bus, including while idle, so the
+    freshness gate in ``start_action`` passes without an external state pusher.
+    """
+
+    try:
+        state_vector = actuator.read_state()
+    except Exception as exc:
+        with runner.lock:
+            runner.last_inference_error = f"state read failed: {exc}"
+        runner.emit("robot_state_read_failed", error=str(exc))
+        return False
+    now = time.time()
+    with runner.lock:
+        runner.latest_state = state_vector
+        runner.latest_state_at = now
+        runner.waiting_for_state_generation = None
+    return True
+
+
+def inference_loop() -> None:
+    """Drive the policy while a supervisor-owned action is active.
+
+    When the runner owns the SO-101 bus this loop closes the physical control
+    loop: read joint state, infer, and command the motors. Without a connected
+    actuator it stays inference-only and relies on ``POST /v1/state``, emitting
+    action-chunk events for an external actuator boundary.
     """
 
     interval = 1 / max(INFERENCE_FPS, 0.1)
     while not runner.worker_stop.wait(interval):
+        with runner.lock:
+            actuator = runner.actuator
+
+        # The bus is touched only from this thread, so state reads and action
+        # sends never race the serial port against each other.
+        if actuator is not None:
+            refresh_robot_state(actuator)
+
         with runner.lock:
             active = dict(runner.active) if runner.state == "running" and runner.active else None
             generation = runner.task_generation
@@ -511,6 +644,7 @@ def inference_loop() -> None:
                 action = policy.select_action(processed_input)
                 action = postprocess(action)
             dimension = action_dimension(action)
+            action_values = to_action_list(action)
         except Exception as exc:
             message = str(exc)
             with runner.lock:
@@ -518,8 +652,8 @@ def inference_loop() -> None:
             runner.emit("inference_error", active=active, error=message)
             continue
 
-        with runner.lock:
-            still_current = (
+        def is_still_current() -> bool:
+            return (
                 runner.state == "running"
                 and runner.active is not None
                 and runner.task_generation == generation
@@ -527,6 +661,27 @@ def inference_loop() -> None:
                 and runner.active["revision"] == active["revision"]
                 and runner.active["step"] == active["step"]
             )
+
+        with runner.lock:
+            still_current = is_still_current()
+
+        # Command the motors only while this is still the active step. A cancel
+        # arriving right after this check stops the next tick, not this one.
+        sent_action: dict[str, float] | None = None
+        if still_current and actuator is not None:
+            try:
+                sent_action = actuator.send_action(action_values)
+            except Exception as exc:
+                message = str(exc)
+                with runner.lock:
+                    runner.last_inference_error = f"send_action failed: {message}"
+                runner.emit("actuation_failed", active=active, error=message)
+                continue
+
+        with runner.lock:
+            # Re-check under the lock: the action may have been cancelled while we
+            # were sending, so runner.active can be None again here.
+            still_current = is_still_current()
             if still_current:
                 runner.inference_count += 1
                 runner.last_inference_at = time.time()
@@ -536,6 +691,10 @@ def inference_loop() -> None:
                 count = runner.inference_count
                 runner.active["inference_count"] = int(runner.active.get("inference_count", 0)) + 1
                 action_inference_count = runner.active["inference_count"]
+                if sent_action is not None and actuator is not None and actuator.actuation_enabled:
+                    runner.actuation_count += 1
+                    runner.last_sent_action = sent_action
+                    runner.last_sent_action_at = time.time()
             else:
                 count = 0
                 action_inference_count = 0
@@ -546,6 +705,8 @@ def inference_loop() -> None:
                 action_dimension=dimension,
                 frame_names=sorted(frames),
                 action_inference_count=action_inference_count,
+                actuated=sent_action is not None and actuator is not None and actuator.actuation_enabled,
+                sent_action=sent_action,
             )
 
 
@@ -727,12 +888,17 @@ def shutdown() -> None:
         runner.worker.join(timeout=3)
     with runner.lock:
         cameras = list(runner.cameras.values())
+        actuator = runner.actuator
         runner.cameras = {}
+        runner.actuator = None
         runner.active = None
         runner.policy = None
         runner.preprocess = None
         runner.postprocess = None
         runner.state = "stopped"
+    # Release the serial port after the control thread has stopped touching it.
+    if actuator is not None:
+        actuator.disconnect()
     for camera in cameras:
         try:
             camera.disconnect()

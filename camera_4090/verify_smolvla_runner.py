@@ -26,8 +26,8 @@ def verify(base_url: str, timeout: float, expected_names: list[str]) -> dict[str
 
     if health.get("state") != "ready" or health.get("policy_loaded") is not True:
         raise RuntimeError(f"SmolVLA runner is not ready: {health}")
-    if health.get("execution_mode") != "inference_only":
-        raise RuntimeError("Unexpected SmolVLA runner execution mode.")
+    if health.get("execution_mode") not in {"inference_only", "robot_state_readonly", "actuation"}:
+        raise RuntimeError(f"Unexpected SmolVLA runner execution mode: {health.get('execution_mode')}")
 
     actual_names = {item.get("name") for item in health.get("policy_cameras", []) if isinstance(item, dict)}
     if actual_names != set(expected_names):
